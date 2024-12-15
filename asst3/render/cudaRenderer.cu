@@ -361,22 +361,37 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
         alpha = .5f;
     }
 
-    float oneMinusAlpha = 1.f - alpha;
+    atomicAdd(&(imagePtr->x), alpha * rgb.x - alpha * ((*imagePtr).x));
+    atomicAdd(&(imagePtr->y), alpha * rgb.y - alpha * ((*imagePtr).y));
+    atomicAdd(&(imagePtr->z), alpha * rgb.z - alpha * ((*imagePtr).z));
+    atomicAdd(&(imagePtr->w), alpha);
+}
 
-    // BEGIN SHOULD-BE-ATOMIC REGION
-    // global memory read
 
-    float4 existingColor = *imagePtr;
-    float4 newColor;
-    newColor.x = alpha * rgb.x + oneMinusAlpha * existingColor.x;
-    newColor.y = alpha * rgb.y + oneMinusAlpha * existingColor.y;
-    newColor.z = alpha * rgb.z + oneMinusAlpha * existingColor.z;
-    newColor.w = alpha + existingColor.w;
+__device__ __inline__ int
+IsSafe(
+    float circleX, float circleY, float circleRadius,
+    float boxL, float boxR, float boxT, float boxB)
+{
+    // circleX , circleY , radius  , boxL    , boxR    , boxT    , boxB
+    // 0.500000, 0.500000, 0.300000, 0.100000, 0.700000, 0.800000, 0.200000
+    if(boxL == 0.0f and boxR == 0.0f and boxT == 0.0f and boxB == 0.0f) {
+        return 1;
+    }
+    // clamp circle center to box (finds the closest point on the box)
+    float closestX = (circleX > boxL) ? ((circleX < boxR) ? circleX : boxR) : boxL;
+    float closestY = (circleY > boxB) ? ((circleY < boxT) ? circleY : boxT) : boxB;
 
-    // global memory write
-    *imagePtr = newColor;
+    // is circle radius less than the distance to the closest point on
+    // the box?
+    float distX = closestX - circleX;
+    float distY = closestY - circleY;
 
-    // END SHOULD-BE-ATOMIC REGION
+    if ( ((distX*distX) + (distY*distY)) <= (circleRadius*circleRadius) ) {
+        return 0;
+    } else {
+        return 1;
+    }
 }
 
 // kernelRenderCircles -- (CUDA device code)
@@ -384,8 +399,7 @@ shadePixel(int circleIndex, float2 pixelCenter, float3 p, float4* imagePtr) {
 // Each thread renders a circle.  Since there is no protection to
 // ensure order of update or mutual exclusion on the output image, the
 // resulting image will be incorrect.
-__global__ void kernelRenderCircles() {
-
+__global__ void kernelRenderCircles(float* each_cb) {
     int index = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (index >= cuConstRendererParams.numCircles)
@@ -396,6 +410,25 @@ __global__ void kernelRenderCircles() {
     // read position and radius
     float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
     float  rad = cuConstRendererParams.radius[index];
+
+    for(int i = 0; i < index; i++) {
+        int offset = 5 * i;
+        while(each_cb[offset] == 1) {}
+        atomicExch(&each_cb[offset], 1);
+
+        float minX = each_cb[offset+1];
+        float maxX = each_cb[offset+2];
+        float minY = each_cb[offset+3];
+        float maxY = each_cb[offset+4];
+
+        atomicExch(&each_cb[offset], 0);
+
+        int safe = IsSafe(p.x, p.y, rad, minX, maxX, maxY, minY);
+
+        if(safe == 0) {
+            i--;
+        }
+    }
 
     // compute the bounding box of the circle. The bound is in integer
     // screen coordinates, so it's clamped to the edges of the screen.
@@ -425,6 +458,37 @@ __global__ void kernelRenderCircles() {
             imgPtr++;
         }
     }
+
+    int offset = 5 * index;
+    while(each_cb[offset] == 1) {}
+    atomicExch(&each_cb[offset], 1);
+
+    each_cb[offset+1] = 0.0f;
+    each_cb[offset+2] = 0.0f;
+    each_cb[offset+3] = 0.0f;
+    each_cb[offset+4] = 0.0f;
+
+    atomicExch(&each_cb[offset], 0);
+}
+
+__global__ void fill_cb(float* each_cb) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (index >= cuConstRendererParams.numCircles)
+        return;
+
+    int index3 = 3 * index;
+
+    // read position and radius
+    float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
+    float  rad = cuConstRendererParams.radius[index];
+
+    int offset = 5 * index;
+    each_cb[offset] = 0;
+    each_cb[offset+1] = p.x - rad;
+    each_cb[offset+2] = p.x + rad;
+    each_cb[offset+3] = p.y - rad;
+    each_cb[offset+4] = p.y + rad;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////
@@ -525,6 +589,7 @@ CudaRenderer::setup() {
     cudaMalloc(&cudaDeviceColor, sizeof(float) * 3 * numCircles);
     cudaMalloc(&cudaDeviceRadius, sizeof(float) * numCircles);
     cudaMalloc(&cudaDeviceImageData, sizeof(float) * 4 * image->width * image->height);
+    cudaMalloc(&each_circle_block, sizeof(float) * 5 * numCircles);
 
     cudaMemcpy(cudaDevicePosition, position, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
     cudaMemcpy(cudaDeviceVelocity, velocity, sizeof(float) * 3 * numCircles, cudaMemcpyHostToDevice);
@@ -640,6 +705,8 @@ CudaRenderer::render() {
     dim3 blockDim(256, 1);
     dim3 gridDim((numCircles + blockDim.x - 1) / blockDim.x);
 
-    kernelRenderCircles<<<gridDim, blockDim>>>();
+    fill_cb<<<gridDim, blockDim>>>(each_circle_block);
+    cudaDeviceSynchronize();
+    kernelRenderCircles<<<gridDim, blockDim>>>(each_circle_block);
     cudaDeviceSynchronize();
 }

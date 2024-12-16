@@ -510,7 +510,7 @@ __global__ void fill_cb(float* each_cb) {
     float  rad = cuConstRendererParams.radius[index];
 
     int offset = 5 * index;
-    each_cb[offset] = 0;
+    each_cb[offset] = 0.0f;
     each_cb[offset+1] = p.x - rad;
     each_cb[offset+2] = p.x + rad;
     each_cb[offset+3] = p.y - rad;

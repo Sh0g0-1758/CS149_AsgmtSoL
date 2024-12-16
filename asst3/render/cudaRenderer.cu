@@ -410,65 +410,95 @@ __global__ void kernelRenderCircles(float* each_cb) {
     // read position and radius
     float3 p = *(float3*)(&cuConstRendererParams.position[index3]);
     float  rad = cuConstRendererParams.radius[index];
+    printf("Starting Thread %d\n", index);
+    if(index == 0) {
+        // compute the bounding box of the circle. The bound is in integer
+        // screen coordinates, so it's clamped to the edges of the screen.
+        short imageWidth = cuConstRendererParams.imageWidth;
+        short imageHeight = cuConstRendererParams.imageHeight;
+        short minX = static_cast<short>(imageWidth * (p.x - rad));
+        short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+        short minY = static_cast<short>(imageHeight * (p.y - rad));
+        short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
 
-    for(int i = 0; i < index; i++) {
-        int offset = 5 * i;
-        while(each_cb[offset] == 1) {}
-        atomicExch(&each_cb[offset], 1);
+        // a bunch of clamps.  Is there a CUDA built-in for this?
+        short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+        short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+        short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+        short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
 
-        float minX = each_cb[offset+1];
-        float maxX = each_cb[offset+2];
-        float minY = each_cb[offset+3];
-        float maxY = each_cb[offset+4];
+        float invWidth = 1.f / imageWidth;
+        float invHeight = 1.f / imageHeight;
 
-        atomicExch(&each_cb[offset], 0);
+        // for all pixels in the bonding box
+        for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
+            float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
+            for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
+                float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                    invHeight * (static_cast<float>(pixelY) + 0.5f));
+                shadePixel(index, pixelCenterNorm, p, imgPtr);
+                imgPtr++;
+            }
+        }
+        int offset = 5 * index;
 
-        int safe = IsSafe(p.x, p.y, rad, minX, maxX, maxY, minY);
+        each_cb[offset+1] = 0.0f;
+        each_cb[offset+2] = 0.0f;
+        each_cb[offset+3] = 0.0f;
+        each_cb[offset+4] = 0.0f;
+    } else {
+        for(int i = 0; i < index; i++) {
+            int offset = 5 * i;
 
-        if(safe == 0) {
-            i--;
+            float minX = each_cb[offset+1];
+            float maxX = each_cb[offset+2];
+            float minY = each_cb[offset+3];
+            float maxY = each_cb[offset+4];
+
+            int safe = IsSafe(p.x, p.y, rad, minX, maxX, maxY, minY);
+
+            if(safe == 0) {
+                i--;
+            }
+            if(i == index - 1) {
+                // compute the bounding box of the circle. The bound is in integer
+                // screen coordinates, so it's clamped to the edges of the screen.
+                short imageWidth = cuConstRendererParams.imageWidth;
+                short imageHeight = cuConstRendererParams.imageHeight;
+                short minX = static_cast<short>(imageWidth * (p.x - rad));
+                short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
+                short minY = static_cast<short>(imageHeight * (p.y - rad));
+                short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
+
+                // a bunch of clamps.  Is there a CUDA built-in for this?
+                short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
+                short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
+                short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
+                short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
+
+                float invWidth = 1.f / imageWidth;
+                float invHeight = 1.f / imageHeight;
+
+                // for all pixels in the bonding box
+                for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
+                    float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
+                    for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
+                        float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
+                                                            invHeight * (static_cast<float>(pixelY) + 0.5f));
+                        shadePixel(index, pixelCenterNorm, p, imgPtr);
+                        imgPtr++;
+                    }
+                }
+
+                int offset = 5 * index;
+                each_cb[offset+1] = 0.0f;
+                each_cb[offset+2] = 0.0f;
+                each_cb[offset+3] = 0.0f;
+                each_cb[offset+4] = 0.0f;
+            }
         }
     }
-
-    // compute the bounding box of the circle. The bound is in integer
-    // screen coordinates, so it's clamped to the edges of the screen.
-    short imageWidth = cuConstRendererParams.imageWidth;
-    short imageHeight = cuConstRendererParams.imageHeight;
-    short minX = static_cast<short>(imageWidth * (p.x - rad));
-    short maxX = static_cast<short>(imageWidth * (p.x + rad)) + 1;
-    short minY = static_cast<short>(imageHeight * (p.y - rad));
-    short maxY = static_cast<short>(imageHeight * (p.y + rad)) + 1;
-
-    // a bunch of clamps.  Is there a CUDA built-in for this?
-    short screenMinX = (minX > 0) ? ((minX < imageWidth) ? minX : imageWidth) : 0;
-    short screenMaxX = (maxX > 0) ? ((maxX < imageWidth) ? maxX : imageWidth) : 0;
-    short screenMinY = (minY > 0) ? ((minY < imageHeight) ? minY : imageHeight) : 0;
-    short screenMaxY = (maxY > 0) ? ((maxY < imageHeight) ? maxY : imageHeight) : 0;
-
-    float invWidth = 1.f / imageWidth;
-    float invHeight = 1.f / imageHeight;
-
-    // for all pixels in the bonding box
-    for (int pixelY=screenMinY; pixelY<screenMaxY; pixelY++) {
-        float4* imgPtr = (float4*)(&cuConstRendererParams.imageData[4 * (pixelY * imageWidth + screenMinX)]);
-        for (int pixelX=screenMinX; pixelX<screenMaxX; pixelX++) {
-            float2 pixelCenterNorm = make_float2(invWidth * (static_cast<float>(pixelX) + 0.5f),
-                                                 invHeight * (static_cast<float>(pixelY) + 0.5f));
-            shadePixel(index, pixelCenterNorm, p, imgPtr);
-            imgPtr++;
-        }
-    }
-
-    int offset = 5 * index;
-    while(each_cb[offset] == 1) {}
-    atomicExch(&each_cb[offset], 1);
-
-    each_cb[offset+1] = 0.0f;
-    each_cb[offset+2] = 0.0f;
-    each_cb[offset+3] = 0.0f;
-    each_cb[offset+4] = 0.0f;
-
-    atomicExch(&each_cb[offset], 0);
+    printf("Done with Thread %d\n", index);
 }
 
 __global__ void fill_cb(float* each_cb) {

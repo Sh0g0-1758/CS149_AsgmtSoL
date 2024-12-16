@@ -441,11 +441,7 @@ __global__ void kernelRenderCircles(float* each_cb) {
             }
         }
         int offset = 5 * index;
-
-        each_cb[offset+1] = 0.0f;
-        each_cb[offset+2] = 0.0f;
-        each_cb[offset+3] = 0.0f;
-        each_cb[offset+4] = 0.0f;
+        each_cb[offset] = 1.0f;
     } else {
         for(int i = 0; i < index; i++) {
             int offset = 5 * i;
@@ -455,11 +451,14 @@ __global__ void kernelRenderCircles(float* each_cb) {
             float minY = each_cb[offset+3];
             float maxY = each_cb[offset+4];
 
-            int safe = IsSafe(p.x, p.y, rad, minX, maxX, maxY, minY);
+            if(each_cb[offset] == 0.0f) {
+                int safe = IsSafe(p.x, p.y, rad, minX, maxX, maxY, minY);
 
-            if(safe == 0) {
-                i--;
+                if(safe == 0) {
+                    i--;
+                }
             }
+
             if(i == index - 1) {
                 // compute the bounding box of the circle. The bound is in integer
                 // screen coordinates, so it's clamped to the edges of the screen.
@@ -491,10 +490,7 @@ __global__ void kernelRenderCircles(float* each_cb) {
                 }
 
                 int offset = 5 * index;
-                each_cb[offset+1] = 0.0f;
-                each_cb[offset+2] = 0.0f;
-                each_cb[offset+3] = 0.0f;
-                each_cb[offset+4] = 0.0f;
+                each_cb[offset] = 1.0f;
             }
         }
     }
